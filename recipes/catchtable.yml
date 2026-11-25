@@ -1,0 +1,9 @@
+site: catchtable
+loginUrl: https://app.catchtable.co.kr/ct/login        # 확인 필요
+idSelector: 'input[name="id"], input[type="email"]'       # 확인 필요
+passwordSelector: 'input[type="password"]'
+submitSelector: 'button[type="submit"]'
+successSelector: 'a[href*="/my"], [data-testid="my-page"]'  # 로그인 후에만 보이는 요소. 확인 필요
+otpSelector: 'input[name="authCode"]'                      # 없으면 삭제
+otpSubmitSelector: 'button[type="submit"]'
+waitMs: 2500
