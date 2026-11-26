@@ -10,6 +10,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -71,6 +72,10 @@ public class CdpClient implements AutoCloseable {
     }
 
     public JsonNode call(String method, Map<String, Object> params) throws Exception {
+        return call(method, params, 30);
+    }
+
+    public JsonNode call(String method, Map<String, Object> params, int timeoutSeconds) throws Exception {
         int id = seq.incrementAndGet();
         ObjectNode m = om.createObjectNode();
         m.put("id", id);
@@ -79,7 +84,7 @@ public class CdpClient implements AutoCloseable {
         var f = new CompletableFuture<JsonNode>();
         pending.put(id, f);
         ws.sendText(om.writeValueAsString(m), true).get();
-        JsonNode r = f.get(30, TimeUnit.SECONDS);
+        JsonNode r = f.get(timeoutSeconds, TimeUnit.SECONDS);
         if (r.has("error")) {
             throw new IllegalStateException("CDP " + method + ": " + r.get("error"));
         }
@@ -165,8 +170,42 @@ public class CdpClient implements AutoCloseable {
         if (!"ok".equals(onElement(bySelector(selector), prepare))) {
             throw new IllegalStateException("element not found: " + selector);
         }
-        call("Input.insertText", Map.of("text", value));
+        // 글자 단위로 keydown → 입력 → keyup. keyup/keydown에만 반응하는 폼도 있다.
+        for (int codePoint : value.codePoints().toArray()) {
+            String ch = Character.toString(codePoint);
+            call("Input.dispatchKeyEvent", Map.of("type", "rawKeyDown", "key", ch));
+            call("Input.insertText", Map.of("text", ch));
+            call("Input.dispatchKeyEvent", Map.of("type", "keyUp", "key", ch));
+        }
         onElement(bySelector(selector), "el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return 'ok';");
+    }
+
+    /** 현재 화면의 PNG. 입력칸에 적힌 글자(ID 등)는 찍히지 않도록 가린 뒤 찍는다. */
+    public byte[] screenshotPng() throws Exception {
+        evalString("""
+            (() => { const s = document.createElement('style');
+              s.textContent = 'input,textarea{color:transparent!important;text-shadow:none!important;caret-color:transparent!important;-webkit-text-fill-color:transparent!important}';
+              document.documentElement.appendChild(s); return 'ok'; })()""");
+        JsonNode r = call("Page.captureScreenshot", Map.of("format", "png"), 10);
+        return Base64.getDecoder().decode(r.get("data").asText());
+    }
+
+    /** 화면에 보이는 요소 중 오류·인증·캡차 관련 문구를 담은 것의 텍스트(각 100자, 최대 3개). 없으면 빈 문자열. */
+    public String errorHints() throws Exception {
+        String r = evalString("""
+            (() => { %s const re = /오류|올바르지|실패|인증|captcha|robot/i; const out = [];
+              const skip = ['SCRIPT','STYLE','NOSCRIPT','INPUT','TEXTAREA','SELECT','OPTION'];
+              for (const el of document.querySelectorAll('body *')) {
+                if (out.length >= 3) break;
+                if (skip.includes(el.tagName)) continue;
+                const t = (el.innerText || '').trim();
+                if (!t || !re.test(t) || !vis(el)) continue;
+                if ([...el.children].some(c => re.test(c.innerText || ''))) continue;   // 가장 안쪽 요소만
+                const cut = t.replace(/\\s+/g, ' ').slice(0, 100);
+                if (!out.includes(cut)) out.push(cut);
+              }
+              return out.join(' | '); })()""".formatted(VIS));
+        return r == null ? "" : r;
     }
 
     public boolean exists(String selector) throws Exception {

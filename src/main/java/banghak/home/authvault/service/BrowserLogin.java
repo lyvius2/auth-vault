@@ -3,21 +3,39 @@ package banghak.home.authvault.service;
 import banghak.home.authvault.client.CdpClient;
 import banghak.home.authvault.client.SiteRecipe;
 import banghak.home.authvault.config.VaultProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 @Service
 public class BrowserLogin {
     public enum Status { OK, OTP_REQUIRED, FAILED, ALREADY_LOGGED_IN }
     public record Result(Status status, String detail) {}
+    private static final Logger log = LoggerFactory.getLogger(BrowserLogin.class);
+
+    static final int DEBUG_KEEP = 20;
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     private final VaultProperties props;
+    private final Path debugDir;
     private final Map<String, CdpClient> awaitingOtp = new ConcurrentHashMap<>();
 
-    BrowserLogin(VaultProperties props) { this.props = props; }
+    BrowserLogin(VaultProperties props) {
+        this.props = props;
+        this.debugDir = Path.of(props.dataFile()).toAbsolutePath().resolveSibling("debug");     // /data/debug
+    }
 
     private int portFor(String user) {
         Integer p = props.profiles().get(user.toLowerCase());
@@ -136,9 +154,53 @@ public class BrowserLogin {
         return s;
     }
 
+    // <site>-<user>-<yyyyMMdd-HHmmss>.png 로 저장하고 최근 DEBUG_KEEP개만 남긴다. site/user는 LLM이 넘긴 값이라 파일명에 쓸 글자만 남긴다.
+    static synchronized String saveScreenshot(Path dir, String site, String user, byte[] png) throws IOException {
+        Files.createDirectories(dir);
+        String name = "%s-%s-%s.png".formatted(safe(site), safe(user), LocalDateTime.now().format(STAMP));
+        Files.write(dir.resolve(name), png);
+        try (Stream<Path> files = Files.list(dir)) {
+            List<Path> shots = files.filter(p -> p.getFileName().toString().endsWith(".png"))
+                    .sorted(Comparator.comparing((Path p) -> p.toFile().lastModified()).thenComparing(Comparator.naturalOrder()))
+                    .toList();
+            for (Path old : shots.subList(0, Math.max(0, shots.size() - DEBUG_KEEP))) {
+                Files.deleteIfExists(old);
+            }
+        }
+        return name;
+    }
+
+    private static String safe(String s) {
+        return s == null ? "unknown" : s.toLowerCase().replaceAll("[^a-z0-9_-]", "_");
+    }
+
+    // FAILED 직전에 진단 정보를 모은다: URL·title, 제출 버튼 상태, 화면의 오류 문구, 스크린샷 파일명.
+    private Result fail(CdpClient cdp, SiteRecipe r, String user, String reason, String submitState, String... secrets) {
+        String base = failureDetail(cdp, reason, secrets);
+        StringBuilder detail = new StringBuilder(base);
+        if (submitState != null) {
+            detail.append("; submit=").append(submitState);
+        }
+        if (base.contains("(url=")) {       // 페이지에 닿지 않으면(접속 실패 등) 더 물어봐야 타임아웃만 쌓인다
+            try {
+                String hints = cdp.errorHints();
+                if (!hints.isEmpty()) {
+                    detail.append("; page says: ").append(redact(hints, secrets));
+                }
+            } catch (Exception ignored) {}
+            try {
+                detail.append("; screenshot=").append(saveScreenshot(debugDir, r.site(), user, cdp.screenshotPng()));
+            } catch (Exception e) {
+                log.warn("debug screenshot failed: {}", e.getClass().getSimpleName());
+            }
+        }
+        return new Result(Status.FAILED, detail.toString());
+    }
+
     public Result login(String user, SiteRecipe r, CredentialStore.Credential cred) {
         CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user));
         String[] secrets = {cred.id(), cred.password()};
+        String submitState = null;      // 클릭 직전의 제출 버튼 상태
         try {
             cdp.open();
             cdp.navigate(r.loginUrl());
@@ -153,10 +215,13 @@ public class BrowserLogin {
                 cdp.typeText(r.idSelector(), cred.id());
                 cdp.typeText(r.passwordSelector(), cred.password());
                 if (submitStaysDisabled(cdp, r, SUBMIT_ENABLE_WAIT_MS)) {
-                    Result res = new Result(Status.FAILED, failureDetail(cdp, "submit stays disabled after fill", secrets));
+                    Result res = fail(cdp, r, user, "submit stays disabled after fill", "disabled", secrets);
                     cdp.close();
                     return res;
                 }
+            }
+            if (!blank(r.submitText()) || !blank(r.submitSelector())) {
+                submitState = submitStaysDisabled(cdp, r, 0) ? "disabled" : "enabled";
             }
             submit(cdp, r.submitText(), r.submitSelector());
             Status status = awaitOutcome(cdp, r, OUTCOME_WAIT_MS, true);
@@ -165,11 +230,11 @@ public class BrowserLogin {
                 return new Result(Status.OTP_REQUIRED, "site asks for a one-time code");
             }
             Result res = status == Status.OK ? new Result(Status.OK, "logged in")
-                    : new Result(Status.FAILED, failureDetail(cdp, "login not confirmed after submit (wrong password, captcha, or layout change)", secrets));
+                    : fail(cdp, r, user, "login not confirmed after submit (wrong password, captcha, or layout change)", submitState, secrets);
             cdp.close();
             return res;
         } catch (Exception e) {
-            Result res = new Result(Status.FAILED, failureDetail(cdp, describe(e), secrets));
+            Result res = fail(cdp, r, user, describe(e), submitState, secrets);
             cdp.close();
             return res;
         }
@@ -186,9 +251,9 @@ public class BrowserLogin {
                 submit(cdp, r.otpSubmitText(), r.otpSubmitSelector());
                 Thread.sleep(Math.max(r.waitMs(), 1500));
                 return awaitOutcome(cdp, r, OUTCOME_WAIT_MS, false) == Status.OK ? new Result(Status.OK, "logged in")
-                        : new Result(Status.FAILED, failureDetail(cdp, "OTP rejected or login not confirmed", code));
+                        : fail(cdp, r, user, "OTP rejected or login not confirmed", null, code);
             } catch (Exception e) {
-                return new Result(Status.FAILED, failureDetail(cdp, describe(e), code));
+                return fail(cdp, r, user, describe(e), null, code);
             }
         }
     }
