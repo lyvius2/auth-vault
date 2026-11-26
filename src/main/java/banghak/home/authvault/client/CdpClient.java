@@ -107,27 +107,43 @@ public class CdpClient implements AutoCloseable {
         return v.isMissingNode() || v.isNull() ? null : v.asText();
     }
 
+    // 보임 = 크기가 있고 offsetParent가 있는 요소. position:fixed는 offsetParent가 항상 null이라 따로 인정한다.
+    // pick = 후보 중 보이는 첫 요소, 없으면 첫 요소.
+    private static final String VIS = """
+        const vis = el => { if (!el) return false; const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && (el.offsetParent != null || getComputedStyle(el).position === 'fixed'); };
+        const pick = list => [...list].find(vis) || list[0];
+        """;
+
+    private static final String SET_VALUE = "const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;";
+    private static final String FIRE_INPUT = "el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true}));";
+
     public void fill(String selector, String value) throws Exception {
-        String js = """
-            (() => { const el = document.querySelector(%s); if (!el) return 'missing';
-              const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
-              el.focus(); set.call(el, %s); el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return 'ok'; })()
-            """.formatted(om.writeValueAsString(selector), om.writeValueAsString(value));
-        if (!"ok".equals(evalString(js))) {
+        String body = "%s el.focus(); set.call(el, %s); %s return 'ok';".formatted(SET_VALUE, om.writeValueAsString(value), FIRE_INPUT);
+        if (!"ok".equals(onElement(bySelector(selector), body))) {
             throw new IllegalStateException("element not found: " + selector);
         }
     }
 
-    // offsetParent는 position:fixed 요소에서 null이라, 그 경우는 getClientRects로 보이는지 판단한다.
-    private static final String VIS = "const vis = el => !!el && (el.offsetParent != null || el.getClientRects().length > 0);";
+    /** 입력칸에 들어 있는 값의 길이. 요소가 없으면 -1. 값 자체는 꺼내지 않는다. */
+    public int valueLength(String selector) throws Exception {
+        String r = onElement(bySelector(selector), "return String((el.value || '').length);");
+        return r == null || "missing".equals(r) ? -1 : Integer.parseInt(r);
+    }
+
+    /** 진단용: 셀렉터에 걸리는 요소 수. 예: matches=2(visible=1) */
+    public String matchCounts(String selector) throws Exception {
+        return evalString("(() => { %s const all = [...document.querySelectorAll(%s)]; return 'matches=' + all.length + '(visible=' + all.filter(vis).length + ')'; })()"
+                .formatted(VIS, om.writeValueAsString(selector)));
+    }
 
     private static String bySelector(String selector) throws Exception {
-        return "document.querySelector(%s)".formatted(om.writeValueAsString(selector));
+        return "pick(document.querySelectorAll(%s))".formatted(om.writeValueAsString(selector));
     }
 
     // innerText가 text와 같은 button. 보이는 것을 우선하고, 없으면 첫 번째.
     private static String byText(String text) throws Exception {
-        return "(t => { const bs = [...document.querySelectorAll('button')].filter(b => (b.innerText || '').trim() === t); return bs.find(vis) || bs[0]; })(%s)"
+        return "(t => { const bs = [...document.querySelectorAll('button')].filter(b => (b.innerText || '').trim() === t); return pick(bs); })(%s)"
                 .formatted(om.writeValueAsString(text));
     }
 
@@ -164,10 +180,7 @@ public class CdpClient implements AutoCloseable {
         try {
             call("Emulation.setFocusEmulationEnabled", Map.of("enabled", true));    // 백그라운드 탭에서도 focus 유지
         } catch (Exception ignored) {}
-        String prepare = """
-            const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
-            set.call(el, ''); el.focus(); return 'ok';""";
-        if (!"ok".equals(onElement(bySelector(selector), prepare))) {
+        if (!"ok".equals(onElement(bySelector(selector), SET_VALUE + " set.call(el, ''); el.focus(); return 'ok';"))) {
             throw new IllegalStateException("element not found: " + selector);
         }
         // 글자 단위로 keydown → 입력 → keyup. keyup/keydown에만 반응하는 폼도 있다.
@@ -177,7 +190,8 @@ public class CdpClient implements AutoCloseable {
             call("Input.insertText", Map.of("text", ch));
             call("Input.dispatchKeyEvent", Map.of("type", "keyUp", "key", ch));
         }
-        onElement(bySelector(selector), "el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return 'ok';");
+        // input 이벤트는 브라우저가 글자마다 이미 냈다. 포커스를 옮기지 않으니 change만 직접 낸다.
+        onElement(bySelector(selector), "el.dispatchEvent(new Event('change',{bubbles:true})); return 'ok';");
     }
 
     /** 현재 화면의 PNG. 입력칸에 적힌 글자(ID 등)는 찍히지 않도록 가린 뒤 찍는다. */
@@ -209,10 +223,10 @@ public class CdpClient implements AutoCloseable {
     }
 
     public boolean exists(String selector) throws Exception {
-        return "1".equals(evalString("%s ? '1' : '0'".formatted(bySelector(selector))));
+        return "1".equals(evalString("(() => { %s return %s ? '1' : '0'; })()".formatted(VIS, bySelector(selector))));
     }
 
-    /** 요소가 있고 화면에 보이는지. */
+    /** 셀렉터에 걸리는 요소 중 화면에 보이는 것이 있는지. */
     public boolean visible(String selector) throws Exception {
         return "1".equals(evalString("(() => { %s return vis(%s) ? '1' : '0'; })()".formatted(VIS, bySelector(selector))));
     }

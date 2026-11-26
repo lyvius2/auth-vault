@@ -81,10 +81,12 @@ waitMs: 2500                               # 선택. OTP 제출 후 판정 전 �
 로그인 흐름:
 
 1. `loginUrl`로 이동한다. `successSelector`가 있으면 2초 동안 보이는지 확인하고, 보이면 `already_logged_in`.
-2. `idSelector`가 보일 때까지 최대 10초 기다린 뒤 ID/PW를 채운다.
+2. `idSelector`가 보일 때까지 최대 10초 기다린 뒤 ID/PW를 채운다. 채운 뒤 입력칸의 값 길이가 다르면
+   브라우저 입력으로 다시 넣는다.
 3. 제출 버튼이 2초가 지나도 disabled면 글자 단위 브라우저 입력(keydown → `Input.insertText` → keyup)으로 다시 넣어 본다. 그래도 disabled면
    `failed`(`submit stays disabled after fill`).
-4. 제출 후 최대 15초 동안 결과를 기다린다. `otpSelector`가 보이면 `otp_required`, 성공 판정이 서면 `ok`.
+4. 제출 직전에 ID/PW 입력칸이 비어 있으면 제출하지 않고 `failed`(`visible inputs empty before submit`).
+5. 제출 후 최대 15초 동안 결과를 기다린다. `otpSelector`가 보이면 `otp_required`, 성공 판정이 서면 `ok`.
    로그인 페이지를 벗어났는데 3초가 지나도록 둘 다 아니면 그 시점에 `failed`.
 
 성공 판정은 `successSelector` → `successUrlContains` 순서로 확인하며 하나라도 맞으면 성공이다. 둘 다 없으면
@@ -96,15 +98,19 @@ waitMs: 2500                               # 선택. OTP 제출 후 판정 전 �
 실패하면 응답 `detail`에 다음이 붙는다. ID/PW/인증번호와 같은 문자열은 `***`로 가린다.
 
 ```
-login not confirmed after submit (…) (url=…, title=…); submit=enabled; page says: 비밀번호가 올바르지 않습니다; screenshot=catchtable-yunson-20261126-234501.png
+login not confirmed after submit (…) (url=…, title=…); submit=enabled; idSelector matches=1(visible=1); passwordSelector matches=1(visible=1); page says: 비밀번호가 올바르지 않습니다; screenshot=catchtable-yunson-20261126-234501.png
 ```
 
 - `url`: 쿼리스트링·프래그먼트를 뺀 현재 주소
+- `idSelector matches=2(visible=1)`: 셀렉터에 걸리는 요소 수와 그중 보이는 수(`passwordSelector`, OTP 단계는 `otpSelector`)
 - `submit`: 클릭 직전 제출 버튼이 `enabled`였는지 `disabled`였는지
 - `page says`: 화면에 보이는 요소 중 `오류|올바르지|실패|인증|captcha|robot`을 담은 문구(각 100자, 최대 3개, 있을 때만)
 - `screenshot`: 실패 직전 화면. `/data/debug/`에 저장되며 최근 20개만 남는다. 입력칸에 적힌 글자는 가린 채로 찍는다.
 
 스크린샷은 `docker cp vault:/data/debug ./debug`로 꺼내 본다.
+
+셀렉터에 요소가 여러 개 걸리면 화면에 보이는 첫 요소를 쓴다(보이는 것이 없으면 첫 요소). 모바일용·PC용 폼이
+함께 들어 있고 한쪽만 보이는 페이지에서도 같은 셀렉터를 쓸 수 있다.
 
 ## 개발
 
@@ -125,7 +131,7 @@ GitHub → GitHub Actions(`ubuntu-24.04-arm`) → GraalVM 네이티브 빌드 �
    터미널에서는 `gh secret set DOCKERHUB_USERNAME`, `gh secret set DOCKERHUB_TOKEN`으로도 등록할 수 있다.
 2. 태그를 푸시하면 `.github/workflows/publish.yml`이 `<DOCKERHUB_USERNAME>/auth-vault:<tag>`와 `:latest`를 올린다.
    ```sh
-   git tag v0.2.1 && git push origin v0.2.1
+   git tag v0.2.2 && git push origin v0.2.2
    ```
 3. 서버에서 `deploy/docker-compose.yml`, `deploy/.env.example`(→ `.env`), `recipes/`를 한 디렉터리에 두고:
    ```sh

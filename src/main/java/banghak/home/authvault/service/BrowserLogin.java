@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -175,13 +176,20 @@ public class BrowserLogin {
     }
 
     // FAILED 직전에 진단 정보를 모은다: URL·title, 제출 버튼 상태, 화면의 오류 문구, 스크린샷 파일명.
-    private Result fail(CdpClient cdp, SiteRecipe r, String user, String reason, String submitState, String... secrets) {
+    private Result fail(CdpClient cdp, SiteRecipe r, String user, String reason, String submitState, Map<String, String> selectors, String... secrets) {
         String base = failureDetail(cdp, reason, secrets);
         StringBuilder detail = new StringBuilder(base);
         if (submitState != null) {
             detail.append("; submit=").append(submitState);
         }
         if (base.contains("(url=")) {       // 페이지에 닿지 않으면(접속 실패 등) 더 물어봐야 타임아웃만 쌓인다
+            selectors.forEach((name, selector) -> {
+                try {
+                    if (!blank(selector)) {
+                        detail.append("; ").append(name).append(' ').append(cdp.matchCounts(selector));
+                    }
+                } catch (Exception ignored) {}
+            });
             try {
                 String hints = cdp.errorHints();
                 if (!hints.isEmpty()) {
@@ -197,9 +205,24 @@ public class BrowserLogin {
         return new Result(Status.FAILED, detail.toString());
     }
 
+    private static Map<String, String> otpSelectors(SiteRecipe r) {
+        return blank(r.otpSelector()) ? Map.of() : Map.of("otpSelector", r.otpSelector());
+    }
+
+    // 값을 넣은 뒤 길이가 맞는지 보고, 안 맞으면(프레임워크가 값을 되돌린 경우 등) 브라우저 입력으로 다시 넣는다.
+    private static void fillChecked(CdpClient cdp, String selector, String value) throws Exception {
+        cdp.fill(selector, value);
+        if (cdp.valueLength(selector) != value.length()) {
+            cdp.typeText(selector, value);
+        }
+    }
+
     public Result login(String user, SiteRecipe r, CredentialStore.Credential cred) {
         CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user));
         String[] secrets = {cred.id(), cred.password()};
+        Map<String, String> selectors = new LinkedHashMap<>();
+        selectors.put("idSelector", r.idSelector());
+        selectors.put("passwordSelector", r.passwordSelector());
         String submitState = null;      // 클릭 직전의 제출 버튼 상태
         try {
             cdp.open();
@@ -208,17 +231,23 @@ public class BrowserLogin {
                 cdp.close(); return new Result(Status.ALREADY_LOGGED_IN, "session still valid");
             }
             cdp.waitForSelector(r.idSelector(), FORM_WAIT_MS);
-            cdp.fill(r.idSelector(), cred.id());
-            cdp.fill(r.passwordSelector(), cred.password());
+            fillChecked(cdp, r.idSelector(), cred.id());
+            fillChecked(cdp, r.passwordSelector(), cred.password());
             if (submitStaysDisabled(cdp, r, SUBMIT_ENABLE_WAIT_MS)) {
                 // 합성 이벤트를 무시하는 폼: 브라우저 입력으로 다시 넣어 본다
                 cdp.typeText(r.idSelector(), cred.id());
                 cdp.typeText(r.passwordSelector(), cred.password());
                 if (submitStaysDisabled(cdp, r, SUBMIT_ENABLE_WAIT_MS)) {
-                    Result res = fail(cdp, r, user, "submit stays disabled after fill", "disabled", secrets);
+                    Result res = fail(cdp, r, user, "submit stays disabled after fill", "disabled", selectors, secrets);
                     cdp.close();
                     return res;
                 }
+            }
+            // 빈 폼을 제출하면 사이트의 "입력하세요" 오류가 비밀번호 오류처럼 보인다
+            if (cdp.valueLength(r.idSelector()) <= 0 || cdp.valueLength(r.passwordSelector()) <= 0) {
+                Result res = fail(cdp, r, user, "visible inputs empty before submit", null, selectors, secrets);
+                cdp.close();
+                return res;
             }
             if (!blank(r.submitText()) || !blank(r.submitSelector())) {
                 submitState = submitStaysDisabled(cdp, r, 0) ? "disabled" : "enabled";
@@ -230,11 +259,11 @@ public class BrowserLogin {
                 return new Result(Status.OTP_REQUIRED, "site asks for a one-time code");
             }
             Result res = status == Status.OK ? new Result(Status.OK, "logged in")
-                    : fail(cdp, r, user, "login not confirmed after submit (wrong password, captcha, or layout change)", submitState, secrets);
+                    : fail(cdp, r, user, "login not confirmed after submit (wrong password, captcha, or layout change)", submitState, selectors, secrets);
             cdp.close();
             return res;
         } catch (Exception e) {
-            Result res = fail(cdp, r, user, describe(e), submitState, secrets);
+            Result res = fail(cdp, r, user, describe(e), submitState, selectors, secrets);
             cdp.close();
             return res;
         }
@@ -251,9 +280,9 @@ public class BrowserLogin {
                 submit(cdp, r.otpSubmitText(), r.otpSubmitSelector());
                 Thread.sleep(Math.max(r.waitMs(), 1500));
                 return awaitOutcome(cdp, r, OUTCOME_WAIT_MS, false) == Status.OK ? new Result(Status.OK, "logged in")
-                        : fail(cdp, r, user, "OTP rejected or login not confirmed", null, code);
+                        : fail(cdp, r, user, "OTP rejected or login not confirmed", null, otpSelectors(r), code);
             } catch (Exception e) {
-                return fail(cdp, r, user, describe(e), null, code);
+                return fail(cdp, r, user, describe(e), null, otpSelectors(r), code);
             }
         }
     }
