@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "banghak.home"
-version = "0.2.2"
+version = "0.2.3"
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 

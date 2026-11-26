@@ -9,7 +9,7 @@ final class TestProps {
 
     static VaultProperties of(String masterKey, String dataFile, int ttlMinutes) {
         return new VaultProperties("https://vault.test", masterKey, dataFile, "recipes", ttlMinutes,
-                "127.0.0.1", Map.of("yunson", 18800), new VaultProperties.Slack("", ""));
+                "127.0.0.1", null, Map.of("yunson", 18800), new VaultProperties.Slack("", ""));
     }
 
     private TestProps() {}

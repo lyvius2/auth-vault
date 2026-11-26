@@ -11,6 +11,8 @@ import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -24,6 +26,7 @@ public class CdpClient implements AutoCloseable {
     private final HttpClient http = HttpClient.newHttpClient();
     private final String host;
     private final int port;
+    private final String uaOverride;
     private WebSocket ws;
     private String targetId;
     private final AtomicInteger seq = new AtomicInteger();
@@ -32,8 +35,22 @@ public class CdpClient implements AutoCloseable {
     private final StringBuilder partial = new StringBuilder();
 
     public CdpClient(String host, int port) {
+        this(host, port, null);
+    }
+
+    public CdpClient(String host, int port, String uaOverride) {
         this.host = host;
         this.port = port;
+        this.uaOverride = uaOverride;
+    }
+
+    // 헤드리스 Chrome의 UA("HeadlessChrome/1xx")는 WAF가 거부하는 경우가 있다. 버전은 그대로 두고 일반 Chrome UA로 맞춘다.
+    // 설정값(VAULT_UA_OVERRIDE)이 있으면 그것을 쓴다. 바꿀 필요가 없으면 null.
+    static String effectiveUserAgent(String current, String override) {
+        if (override != null && !override.isBlank()) {
+            return override.trim();
+        }
+        return current != null && current.contains("HeadlessChrome/") ? current.replace("HeadlessChrome/", "Chrome/") : null;
     }
 
     public void open() throws Exception {
@@ -57,7 +74,44 @@ public class CdpClient implements AutoCloseable {
                     }
                 }).get();
         call("Page.enable", Map.of());
+        String ua = effectiveUserAgent(evalString("navigator.userAgent"), uaOverride);
+        if (ua != null) {
+            Map<String, Object> params = new HashMap<>();
+            params.put("userAgent", ua);
+            // UA만 바꾸면 Chrome이 sec-ch-ua 헤더를 아예 보내지 않는다. 자동 치환일 때는 브라우저의 실제 값을 그대로 다시 넣어 준다.
+            JsonNode metadata = uaOverride == null || uaOverride.isBlank() ? userAgentMetadata() : null;
+            if (metadata != null) {
+                params.put("userAgentMetadata", metadata);
+            }
+            call("Network.setUserAgentOverride", params);
+        }
+        // 기본 뷰포트가 모바일 크기면 버튼이 화면 밖으로 밀린다
+        call("Emulation.setDeviceMetricsOverride", Map.of("width", 1280, "height", 900, "deviceScaleFactor", 1, "mobile", false));
         call("Runtime.enable", Map.of());
+    }
+
+    // navigator.userAgentData는 보안 컨텍스트에서만 보인다(about:blank에는 없다). 브라우저 자신의 DevTools 주소
+    // (http://localhost:<port>)는 보안 컨텍스트로 취급되므로 거기서 읽는다. 읽지 못하면 null.
+    private JsonNode userAgentMetadata() {
+        try {
+            navigate("http://localhost:%d/json/version".formatted(port));
+            String json = evalString("""
+                navigator.userAgentData
+                  ? navigator.userAgentData.getHighEntropyValues(['architecture','bitness','model','platformVersion','fullVersionList','wow64']).then(v => JSON.stringify(v))
+                  : ''""");
+            if (json == null || json.isEmpty()) {
+                return null;
+            }
+            ObjectNode all = (ObjectNode) om.readTree(json), meta = om.createObjectNode();
+            for (String k : List.of("brands", "fullVersionList", "platform", "platformVersion", "architecture", "model", "mobile", "bitness", "wow64")) {
+                if (all.has(k)) {
+                    meta.set(k, all.get(k));
+                }
+            }
+            return meta;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void dispatch(String msg) {

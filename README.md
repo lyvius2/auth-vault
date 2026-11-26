@@ -55,6 +55,7 @@ OpenClaw에서는 `vault__<이름>`으로 보인다. 모든 도구는 상태값�
 | `VAULT_CDP_HOST` |  | `host.docker.internal` | OpenClaw Chrome이 떠 있는 호스트 |
 | `VAULT_DATA_FILE` |  | `/data/vault.json` | 암호화된 자격증명 파일 |
 | `VAULT_RECIPES_DIR` |  | `/recipes` | 사이트 레시피 디렉터리 |
+| `VAULT_UA_OVERRIDE` |  | (빈 값) | 브라우저 탭에 적용할 User-Agent. 비우면 헤드리스 UA의 `HeadlessChrome/`만 `Chrome/`으로 바꾼다(버전·`sec-ch-ua` 유지). 값을 지정하면 `sec-ch-ua` 헤더는 전송되지 않는다 |
 | `SLACK_BOT_TOKEN` |  | (빈 값) | 감사 로그용. 없으면 stdout 로그만 남는다 |
 | `SLACK_ALERT_CHANNEL` |  | (빈 값) | 감사 로그를 보낼 채널 |
 
@@ -131,7 +132,7 @@ GitHub → GitHub Actions(`ubuntu-24.04-arm`) → GraalVM 네이티브 빌드 �
    터미널에서는 `gh secret set DOCKERHUB_USERNAME`, `gh secret set DOCKERHUB_TOKEN`으로도 등록할 수 있다.
 2. 태그를 푸시하면 `.github/workflows/publish.yml`이 `<DOCKERHUB_USERNAME>/auth-vault:<tag>`와 `:latest`를 올린다.
    ```sh
-   git tag v0.2.2 && git push origin v0.2.2
+   git tag v0.2.3 && git push origin v0.2.3
    ```
 3. 서버에서 `deploy/docker-compose.yml`, `deploy/.env.example`(→ `.env`), `recipes/`를 한 디렉터리에 두고:
    ```sh

@@ -15,7 +15,7 @@ class SiteRecipeTest {
     @TempDir Path dir;
 
     private SiteRecipe.Loader loader(Path recipesDir) {
-        return new SiteRecipe.Loader(new VaultProperties("", "", "", recipesDir.toString(), 10, "", Map.of(), null));
+        return new SiteRecipe.Loader(new VaultProperties("", "", "", recipesDir.toString(), 10, "", null, Map.of(), null));
     }
 
     private SiteRecipe parse(String yaml) throws IOException {

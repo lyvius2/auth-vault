@@ -218,7 +218,7 @@ public class BrowserLogin {
     }
 
     public Result login(String user, SiteRecipe r, CredentialStore.Credential cred) {
-        CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user));
+        CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user), props.uaOverride());
         String[] secrets = {cred.id(), cred.password()};
         Map<String, String> selectors = new LinkedHashMap<>();
         selectors.put("idSelector", r.idSelector());
