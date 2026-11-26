@@ -15,6 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class CdpClient implements AutoCloseable {
@@ -26,6 +27,7 @@ public class CdpClient implements AutoCloseable {
     private String targetId;
     private final AtomicInteger seq = new AtomicInteger();
     private final Map<Integer, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
+    public static final long POLL_MS = 250;
     private final StringBuilder partial = new StringBuilder();
 
     public CdpClient(String host, int port) {
@@ -111,27 +113,93 @@ public class CdpClient implements AutoCloseable {
         }
     }
 
+    // offsetParent는 position:fixed 요소에서 null이라, 그 경우는 getClientRects로 보이는지 판단한다.
+    private static final String VIS = "const vis = el => !!el && (el.offsetParent != null || el.getClientRects().length > 0);";
+
+    private static String bySelector(String selector) throws Exception {
+        return "document.querySelector(%s)".formatted(om.writeValueAsString(selector));
+    }
+
+    // innerText가 text와 같은 button. 보이는 것을 우선하고, 없으면 첫 번째.
+    private static String byText(String text) throws Exception {
+        return "(t => { const bs = [...document.querySelectorAll('button')].filter(b => (b.innerText || '').trim() === t); return bs.find(vis) || bs[0]; })(%s)"
+                .formatted(om.writeValueAsString(text));
+    }
+
+    private String onElement(String elementJs, String bodyJs) throws Exception {
+        return evalString("(() => { %s const el = %s; if (!el) return 'missing'; %s })()".formatted(VIS, elementJs, bodyJs));
+    }
+
+    private static final String CLICK = "el.click(); return 'ok';";
+    private static final String DISABLED = "return (el.disabled || el.getAttribute('aria-disabled') === 'true') ? 'disabled' : 'enabled';";
+
     public void click(String selector) throws Exception {
-        String r = evalString("(() => { const el = document.querySelector(%s); if (!el) return 'missing'; el.click(); return 'ok'; })()".formatted(om.writeValueAsString(selector)));
-        if (!"ok".equals(r)) {
+        if (!"ok".equals(onElement(bySelector(selector), CLICK))) {
             throw new IllegalStateException("element not found: " + selector);
         }
     }
 
-    /** innerText가 text와 같고 화면에 보이는 첫 button을 클릭한다. */
     public void clickByText(String text) throws Exception {
-        String js = """
-            (() => { const t = %s;
-              const el = [...document.querySelectorAll('button')].find(b => b.offsetParent != null && (b.innerText || '').trim() === t);
-              if (!el) return 'missing'; el.click(); return 'ok'; })()
-            """.formatted(om.writeValueAsString(text));
-        if (!"ok".equals(evalString(js))) {
-            throw new IllegalStateException("visible button not found by text: " + text);
+        if (!"ok".equals(onElement(byText(text), CLICK))) {
+            throw new IllegalStateException("button not found by text: " + text);
         }
     }
 
+    /** 요소가 있고 disabled(또는 aria-disabled)일 때만 true. */
+    public boolean isDisabled(String selector) throws Exception {
+        return "disabled".equals(onElement(bySelector(selector), DISABLED));
+    }
+
+    public boolean isDisabledByText(String text) throws Exception {
+        return "disabled".equals(onElement(byText(text), DISABLED));
+    }
+
+    /** fill()의 합성 이벤트를 무시하는 폼용: 입력칸을 비우고 focus한 뒤 브라우저 입력(Input.insertText)으로 넣는다. */
+    public void typeText(String selector, String value) throws Exception {
+        try {
+            call("Emulation.setFocusEmulationEnabled", Map.of("enabled", true));    // 백그라운드 탭에서도 focus 유지
+        } catch (Exception ignored) {}
+        String prepare = """
+            const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+            set.call(el, ''); el.focus(); return 'ok';""";
+        if (!"ok".equals(onElement(bySelector(selector), prepare))) {
+            throw new IllegalStateException("element not found: " + selector);
+        }
+        call("Input.insertText", Map.of("text", value));
+        onElement(bySelector(selector), "el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return 'ok';");
+    }
+
     public boolean exists(String selector) throws Exception {
-        return "1".equals(evalString("document.querySelector(%s) ? '1' : '0'".formatted(om.writeValueAsString(selector))));
+        return "1".equals(evalString("%s ? '1' : '0'".formatted(bySelector(selector))));
+    }
+
+    /** 요소가 있고 화면에 보이는지. */
+    public boolean visible(String selector) throws Exception {
+        return "1".equals(evalString("(() => { %s return vis(%s) ? '1' : '0'; })()".formatted(VIS, bySelector(selector))));
+    }
+
+    /** 요소가 보일 때까지 250ms 간격으로 기다린다. 시간 안에 보이면 true. */
+    public boolean waitVisible(String selector, long timeoutMs) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (true) {
+            if (visible(selector)) {
+                return true;
+            }
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            Thread.sleep(POLL_MS);
+        }
+    }
+
+    public void waitForSelector(String selector) throws Exception {
+        waitForSelector(selector, 10_000);
+    }
+
+    public void waitForSelector(String selector, long timeoutMs) throws Exception {
+        if (!waitVisible(selector, timeoutMs)) {
+            throw new TimeoutException("element not found: " + selector);
+        }
     }
 
     @Override public void close() {

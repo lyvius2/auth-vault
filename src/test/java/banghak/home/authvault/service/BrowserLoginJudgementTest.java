@@ -5,6 +5,7 @@ import banghak.home.authvault.client.SiteRecipe;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -18,7 +19,7 @@ class BrowserLoginJudgementTest {
     private static CdpClient pageAt(String href, boolean markerExists) throws Exception {
         CdpClient cdp = mock(CdpClient.class);
         when(cdp.evalString("location.href")).thenReturn(href);
-        when(cdp.exists("#marker")).thenReturn(markerExists);
+        when(cdp.visible("#marker")).thenReturn(markerExists);
         return cdp;
     }
 
@@ -52,20 +53,52 @@ class BrowserLoginJudgementTest {
     @Test
     void failureDetailHasUrlAndTitleButNeverSecrets() throws Exception {
         CdpClient cdp = mock(CdpClient.class);
-        when(cdp.evalString("location.origin + location.pathname")).thenReturn("https://example.com/login/my-id");
-        when(cdp.evalString("document.title")).thenReturn("로그인 실패 s3cret");
+        when(cdp.evalString(anyString())).thenReturn("https://example.com/login/my-id\n로그인 실패 s3cret");
 
-        String detail = BrowserLogin.failureDetail(cdp, "login not confirmed", "my-id", "s3cret");
+        String detail = BrowserLogin.failureDetail(cdp, "element not found: #login-id", "my-id", "s3cret");
 
-        assertThat(detail).contains("url=https://example.com/login/").contains("title=로그인 실패")
-                .doesNotContain("my-id").doesNotContain("s3cret");
+        assertThat(detail).isEqualTo("element not found: #login-id (url=https://example.com/login/***, title=로그인 실패 ***)");
     }
 
     @Test
     void failureDetailSurvivesBrowserErrors() throws Exception {
         CdpClient cdp = mock(CdpClient.class);
-        when(cdp.evalString("location.origin + location.pathname")).thenThrow(new IllegalStateException("gone"));
+        when(cdp.evalString(anyString())).thenThrow(new IllegalStateException("gone"));
 
         assertThat(BrowserLogin.failureDetail(cdp, "login not confirmed", "pw")).isEqualTo("login not confirmed");
+    }
+
+    @Test
+    void outcomeIsOtpWhenOtpFieldShowsUp() throws Exception {
+        SiteRecipe r = new SiteRecipe("site", LOGIN_URL, "#id", "#pw", "#go", "#marker", "#otp", null, 0, null, null, null);
+        CdpClient cdp = pageAt(LOGIN_URL, false);
+        when(cdp.visible("#otp")).thenReturn(false, true);
+
+        assertThat(BrowserLogin.awaitOutcome(cdp, r, 5_000, true)).isEqualTo(BrowserLogin.Status.OTP_REQUIRED);
+        assertThat(BrowserLogin.awaitOutcome(cdp, r, 0, false)).isEqualTo(BrowserLogin.Status.FAILED);   // OTP 단계에서는 OTP 칸을 보지 않는다
+    }
+
+    @Test
+    void outcomeIsOkOnceSuccessMarkerShowsUp() throws Exception {
+        CdpClient cdp = pageAt(LOGIN_URL, false);
+        when(cdp.visible("#marker")).thenReturn(false, false, true);
+
+        assertThat(BrowserLogin.awaitOutcome(cdp, recipe("#marker", null), 5_000, true)).isEqualTo(BrowserLogin.Status.OK);
+    }
+
+    @Test
+    void outcomeIsFailedWhenNothingHappensBeforeTimeout() throws Exception {
+        assertThat(BrowserLogin.awaitOutcome(pageAt(LOGIN_URL, false), recipe("#marker", null), 300, true))
+                .isEqualTo(BrowserLogin.Status.FAILED);
+    }
+
+    @Test
+    void submitStaysDisabledWaitsForButtonToEnable() throws Exception {
+        CdpClient cdp = mock(CdpClient.class);
+        when(cdp.isDisabled("#go")).thenReturn(true, false);
+        assertThat(BrowserLogin.submitStaysDisabled(cdp, recipe(null, null), 2_000)).isFalse();
+
+        when(cdp.isDisabled("#go")).thenReturn(true);
+        assertThat(BrowserLogin.submitStaysDisabled(cdp, recipe(null, null), 300)).isTrue();
     }
 }
