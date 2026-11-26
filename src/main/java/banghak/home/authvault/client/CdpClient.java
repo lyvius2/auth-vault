@@ -118,6 +118,18 @@ public class CdpClient implements AutoCloseable {
         }
     }
 
+    /** innerText가 text와 같고 화면에 보이는 첫 button을 클릭한다. */
+    public void clickByText(String text) throws Exception {
+        String js = """
+            (() => { const t = %s;
+              const el = [...document.querySelectorAll('button')].find(b => b.offsetParent != null && (b.innerText || '').trim() === t);
+              if (!el) return 'missing'; el.click(); return 'ok'; })()
+            """.formatted(om.writeValueAsString(text));
+        if (!"ok".equals(evalString(js))) {
+            throw new IllegalStateException("visible button not found by text: " + text);
+        }
+    }
+
     public boolean exists(String selector) throws Exception {
         return "1".equals(evalString("document.querySelector(%s) ? '1' : '0'".formatted(om.writeValueAsString(selector))));
     }

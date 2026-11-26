@@ -20,7 +20,10 @@ public record SiteRecipe(
     String successSelector,
     String otpSelector,
     String otpSubmitSelector,
-    int waitMs
+    int waitMs,
+    String submitText,              // 선택. 있으면 submitSelector 대신 이 글자의 버튼을 클릭
+    String otpSubmitText,           // 선택. 있으면 otpSubmitSelector 대신
+    String successUrlContains       // 선택. 제출 후 URL에 이 문자열이 있으면 성공
 ) {
     @Service
     public static class Loader {

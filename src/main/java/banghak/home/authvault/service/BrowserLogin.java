@@ -31,6 +31,53 @@ public class BrowserLogin {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     }
 
+    private static boolean blank(String s) { return s == null || s.isBlank(); }
+
+    private static void submit(CdpClient cdp, String text, String selector) throws Exception {
+        if (!blank(text)) {
+            cdp.clickByText(text);
+        } else if (!blank(selector)) {
+            cdp.click(selector);
+        }
+    }
+
+    // 판정 순서: successSelector → successUrlContains → (둘 다 없을 때만) loginUrl 이탈 여부
+    static boolean succeeded(CdpClient cdp, SiteRecipe r) throws Exception {
+        boolean hasSelector = !blank(r.successSelector()), hasUrl = !blank(r.successUrlContains());
+        if (hasSelector && cdp.exists(r.successSelector())) {
+            return true;
+        }
+        String href = cdp.evalString("location.href");
+        if (hasUrl) {
+            return href != null && href.contains(r.successUrlContains());
+        }
+        return !hasSelector && href != null && !href.startsWith(r.loginUrl());
+    }
+
+    // 실패 원인 파악용으로 현재 위치만 덧붙인다. 폼이 GET으로 제출되면 쿼리스트링에 입력값이 실릴 수 있어
+    // 쿼리·프래그먼트는 버리고, 그래도 남은 비밀값은 가린다.
+    static String failureDetail(CdpClient cdp, String reason, String... secrets) {
+        String detail = reason;
+        try {
+            String url = cdp.evalString("location.origin + location.pathname");
+            String title = cdp.evalString("document.title");
+            if (title != null && title.length() > 80) {
+                title = title.substring(0, 80) + "…";
+            }
+            detail = "%s; url=%s title=%s".formatted(reason, url, title);
+        } catch (Exception ignored) {}
+        return redact(detail, secrets);
+    }
+
+    static String redact(String s, String... secrets) {
+        for (String secret : secrets) {
+            if (!blank(secret)) {
+                s = s.replace(secret, "***");
+            }
+        }
+        return s;
+    }
+
     public Result login(String user, SiteRecipe r, CredentialStore.Credential cred) {
         CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user));
         try {
@@ -41,18 +88,19 @@ public class BrowserLogin {
             }
             cdp.fill(r.idSelector(), cred.id());
             cdp.fill(r.passwordSelector(), cred.password());
-            cdp.click(r.submitSelector());
+            submit(cdp, r.submitText(), r.submitSelector());
             Thread.sleep(Math.max(r.waitMs(), 1500));
             if (r.otpSelector() != null && cdp.exists(r.otpSelector())) {
                 awaitingOtp.put(user.toLowerCase(), cdp);
                 return new Result(Status.OTP_REQUIRED, "site asks for a one-time code");
             }
-            boolean ok = r.successSelector() == null || cdp.exists(r.successSelector());
+            Result res = succeeded(cdp, r) ? new Result(Status.OK, "logged in")
+                    : new Result(Status.FAILED, failureDetail(cdp, "login not confirmed after submit (wrong password, captcha, or layout change)", cred.id(), cred.password()));
             cdp.close();
-            return ok ? new Result(Status.OK, "logged in") : new Result(Status.FAILED, "success marker not found after submit (wrong password, captcha, or layout change)");
+            return res;
         } catch (Exception e) {
             cdp.close();
-            return new Result(Status.FAILED, describe(e));
+            return new Result(Status.FAILED, redact(describe(e), cred.id(), cred.password()));
         }
     }
 
@@ -63,14 +111,12 @@ public class BrowserLogin {
                 return new Result(Status.FAILED, "no login waiting for OTP");
             }
             cdp.fill(r.otpSelector(), code);
-            if (r.otpSubmitSelector() != null) {
-                cdp.click(r.otpSubmitSelector());
-            }
+            submit(cdp, r.otpSubmitText(), r.otpSubmitSelector());
             Thread.sleep(Math.max(r.waitMs(), 1500));
-            boolean ok = r.successSelector() == null || cdp.exists(r.successSelector());
-            return ok ? new Result(Status.OK, "logged in") : new Result(Status.FAILED, "OTP rejected or success marker not found");
+            return succeeded(cdp, r) ? new Result(Status.OK, "logged in")
+                    : new Result(Status.FAILED, failureDetail(cdp, "OTP rejected or login not confirmed", code));
         } catch (Exception e) {
-            return new Result(Status.FAILED, describe(e));
+            return new Result(Status.FAILED, redact(describe(e), code));
         }
     }
 }

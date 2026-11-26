@@ -69,11 +69,18 @@ loginUrl: https://app.catchtable.co.kr/ct/login
 idSelector: 'input[name="id"]'
 passwordSelector: 'input[type="password"]'
 submitSelector: 'button[type="submit"]'
-successSelector: 'a[href*="/my"]'          # 로그인 후에만 보이는 요소. 없으면 성공 여부를 검증하지 않는다
+submitText: 로그인                          # 선택. 있으면 submitSelector 대신, 글자가 정확히 일치하고 화면에 보이는 첫 button을 클릭
+successSelector: 'a[href*="/my"]'          # 선택. 로그인 후에만 보이는 요소
+successUrlContains: /home                  # 선택. 제출 후 URL에 이 문자열이 있으면 성공
 otpSelector: 'input[name="authCode"]'      # 선택. 제출 후 이 요소가 보이면 otp_required
 otpSubmitSelector: 'button[type="submit"]' # 선택
+otpSubmitText: 확인                         # 선택. 있으면 otpSubmitSelector 대신
 waitMs: 2500                               # 제출 후 대기(최소 1500)
 ```
+
+성공 판정은 `successSelector` → `successUrlContains` 순서로 확인하며 하나라도 맞으면 성공이다. 둘 다 없으면
+현재 URL이 `loginUrl`로 시작하지 않는지(로그인 페이지를 벗어났는지)로 판정한다. 실패하면 응답 `detail`에 현재
+URL(쿼리스트링 제외)과 페이지 제목이 붙는다.
 
 ## 개발
 
@@ -94,7 +101,7 @@ GitHub → GitHub Actions(`ubuntu-24.04-arm`) → GraalVM 네이티브 빌드 �
    터미널에서는 `gh secret set DOCKERHUB_USERNAME`, `gh secret set DOCKERHUB_TOKEN`으로도 등록할 수 있다.
 2. 태그를 푸시하면 `.github/workflows/publish.yml`이 `<DOCKERHUB_USERNAME>/auth-vault:<tag>`와 `:latest`를 올린다.
    ```sh
-   git tag v0.1.0 && git push origin v0.1.0
+   git tag v0.1.1 && git push origin v0.1.1
    ```
 3. 서버에서 `deploy/docker-compose.yml`, `deploy/.env.example`(→ `.env`), `recipes/`를 한 디렉터리에 두고:
    ```sh

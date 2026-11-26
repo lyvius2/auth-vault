@@ -9,7 +9,7 @@ spring:
     mcp:
       server:
         name: auth-vault
-        version: 0.1.0
+        version: 0.1.1
         type: SYNC
         protocol: STREAMABLE                 # OpenClaw: mcp.servers.vault.url = http://127.0.0.1:8020/mcp
         streamable-http.mcp-endpoint: /mcp
