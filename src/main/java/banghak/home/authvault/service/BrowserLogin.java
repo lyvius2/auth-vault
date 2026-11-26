@@ -26,6 +26,11 @@ public class BrowserLogin {
         return p;
     }
 
+    // getMessage()가 null인 예외(연결 거부, 타임아웃 등)도 있다. Map.of는 null 값을 받지 못한다.
+    private static String describe(Exception e) {
+        return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+    }
+
     public Result login(String user, SiteRecipe r, CredentialStore.Credential cred) {
         CdpClient cdp = new CdpClient(props.cdpHost(), portFor(user));
         try {
@@ -47,16 +52,16 @@ public class BrowserLogin {
             return ok ? new Result(Status.OK, "logged in") : new Result(Status.FAILED, "success marker not found after submit (wrong password, captcha, or layout change)");
         } catch (Exception e) {
             cdp.close();
-            return new Result(Status.FAILED, e.getMessage());
+            return new Result(Status.FAILED, describe(e));
         }
     }
 
     public Result submitOtp(String user, SiteRecipe r, String code) {
         CdpClient cdp = awaitingOtp.remove(user.toLowerCase());
-        if (cdp == null) {
-            return new Result(Status.FAILED, "no login waiting for OTP");
-        }
-        try {
+        try (cdp) {
+            if (cdp == null) {
+                return new Result(Status.FAILED, "no login waiting for OTP");
+            }
             cdp.fill(r.otpSelector(), code);
             if (r.otpSubmitSelector() != null) {
                 cdp.click(r.otpSubmitSelector());
@@ -65,10 +70,7 @@ public class BrowserLogin {
             boolean ok = r.successSelector() == null || cdp.exists(r.successSelector());
             return ok ? new Result(Status.OK, "logged in") : new Result(Status.FAILED, "OTP rejected or success marker not found");
         } catch (Exception e) {
-            return new Result(Status.FAILED, e.getMessage());
-        }
-        finally {
-            cdp.close();
+            return new Result(Status.FAILED, describe(e));
         }
     }
 }

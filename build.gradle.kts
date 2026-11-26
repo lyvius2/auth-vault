@@ -5,7 +5,7 @@ plugins {
     id("org.graalvm.buildtools.native") version "0.10.6"
 }
 
-group = "kr.furaiki"
+group = "banghak.home"
 version = "0.1.0"
 
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
@@ -25,7 +25,7 @@ dependencies {
 
 graalvmNative {
     binaries.named("main") {
-        imageName = "cena-vault"
+        imageName = "auth-vault"
         buildArgs.add("--no-fallback")
         buildArgs.add("-Djdk.httpclient.allowRestrictedHeaders=host")
     }

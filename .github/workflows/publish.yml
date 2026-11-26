@@ -15,5 +15,5 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/cena-vault:${{ github.ref_name }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/cena-vault:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/auth-vault:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/auth-vault:latest

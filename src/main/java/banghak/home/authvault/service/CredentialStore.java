@@ -18,7 +18,7 @@ import java.util.TreeMap;
 @Service
 public class CredentialStore {
     public record Credential(String id, String password) {}
-    record Entry(String idEnc, String pwEnc, String updatedAt) {}
+    public record Entry(String idEnc, String pwEnc, String updatedAt) {}
 
     private final Path file;
     private final CryptoService crypto;

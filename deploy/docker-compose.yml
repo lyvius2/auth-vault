@@ -1,0 +1,19 @@
+name: vault
+services:
+  vault:
+    image: lyvius2/auth-vault:${IMAGE_TAG:?set IMAGE_TAG in .env}
+    container_name: vault
+    restart: unless-stopped
+    mem_limit: 128m
+    env_file: .env
+    environment:
+      TZ: Asia/Seoul
+      VAULT_BASE_URL: https://cena-ai.duckdns.org
+      VAULT_CDP_HOST: host.docker.internal
+    ports: ["127.0.0.1:8020:8020"]
+    volumes:
+      - vault-data:/data
+      - ./recipes:/recipes:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+volumes:
+  vault-data:

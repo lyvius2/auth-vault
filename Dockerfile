@@ -1,6 +1,8 @@
 # 1) GraalVM native build
 FROM ghcr.io/graalvm/native-image-community:21 AS build
 WORKDIR /src
+# gradlew 스크립트가 xargs를 쓰는데 이 이미지에는 findutils가 없다
+RUN microdnf install -y findutils && microdnf clean all
 COPY gradlew settings.gradle.kts build.gradle.kts ./
 COPY gradle ./gradle
 RUN ./gradlew --no-daemon dependencies > /dev/null || true
